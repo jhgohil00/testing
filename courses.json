@@ -1,0 +1,45 @@
+{
+    "me_je": {
+        "name": "RRB-SSC JE [Made Easy]",
+        "price": 99,
+        "status": "available",
+        "demo_subjects": [
+            {"name": "Fluid Mechanics", "link": "https://t.me/c/3057734979/3"},
+            {"name": "Thermodynamics", "link": "https://t.me/c/3057734979/306"},
+            {"name": "Heat Transfer", "link": "https://t.me/c/3057734979/145"}
+        ]
+    },
+    "me_gate": {
+        "name": "GATE-ESE [Made Easy]",
+        "price": 99,
+        "status": "available",
+        "demo_subjects": [
+            {"name": "Fluid Mechanics", "link": "https://t.me/c/2838375841/72"},
+            {"name": "Thermodynamics", "link": "https://t.me/c/2838375841/66"},
+            {"name": "Heat Transfer", "link": "https://t.me/c/2838375841/148"},
+            {"name": "Production", "link": "https://t.me/c/2838375841/44"}
+        ]
+    },
+    "me_rank": {
+        "name": "Rank Improvement Course [Made Easy]",
+        "price": 99,
+        "status": "available",
+        "demo_subjects": [
+            {"name": "Fluid Mechanics", "link": "https://t.me/c/2749814067/80"},
+            {"name": "Thermodynamics", "link": "https://t.me/c/2749814067/162"},
+            {"name": "Production", "link": "https://t.me/c/2749814067/113"}
+        ]
+    },
+    "pw_je": {
+        "name": "RRB-SSC JE [PW]",
+        "price": 49,
+        "status": "coming_soon",
+        "demo_subjects": []
+    },
+    "pw_gate": {
+        "name": "GATE-ESE [PW]",
+        "price": 49,
+        "status": "available",
+        "demo_subjects": []
+    }
+}
