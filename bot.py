@@ -454,9 +454,11 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     original_msg = update.message.reply_to_message
     original_text = original_msg.text or original_msg.caption
     
-    match = re.search(r'\(ID: `(\d+)`\)', original_text)
+    # This regex is more flexible and correctly finds the ID
+    match = re.search(r'ID: `(\d+)`', original_text)
+    
     if not match:
-        await update.message.reply_text("❌ Could not find a user ID in the message you replied to\. Please reply to the original forwarded message\.")
+        await update.message.reply_text("❌ Could not find a user ID in the message you replied to\. Please reply to the original forwarded message\.", parse_mode=ParseMode.MARKDOWN_V2)
         return
     
     user_id = int(match.group(1))
@@ -466,7 +468,6 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("✅ Reply sent successfully\.")
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to send message to user {user_id}\. Error: {escape_markdown(str(e))}")
-
 async def reply_by_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update): return
     try:
