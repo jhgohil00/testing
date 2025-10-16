@@ -38,10 +38,8 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 RAZORPAY_LINK = os.environ.get("RAZORPAY_LINK", "https://razorpay.me/@gateprep?amount=CVDUr6Uxp2FOGZGwAHntNg%3D%3D")
 
 # --- GitHub Gist Configuration for Persistent Data ---
-GITHUB_USERNAME = os.environ.get("GITHUB_USERNAME")
 GIST_ID = os.environ.get("GIST_ID")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-DB_URL = f"https://my-json-server.typicode.com/{GITHUB_USERNAME}/{GIST_ID}/db"
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -61,19 +59,23 @@ def escape_markdown(text: str) -> str:
 DB_DATA = {} # Global variable to hold all data in memory
 
 def load_data_from_gist():
-    """Loads the entire database from MyJSONServer into the global DB_DATA."""
+    """Loads the entire database directly from the GitHub Gist API."""
     global DB_DATA
-    if not GITHUB_USERNAME or not GIST_ID:
-        logger.error("FATAL: GITHUB_USERNAME or GIST_ID environment variables not set.")
+    if not GIST_ID:
+        logger.error("FATAL: GIST_ID environment variable not set.")
         DB_DATA = {"courses": {}, "stats": {"total_users": 0, "course_views": {}}, "users": []}
         return
     try:
-        response = requests.get(DB_URL)
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        response = requests.get(url)
         response.raise_for_status()
-        DB_DATA = response.json()
-        logger.info("Successfully loaded database from Gist.")
-    except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-        logger.error(f"FATAL: Could not load data from Gist: {e}. Using empty DB.")
+        gist_data = response.json()
+        # The actual content is nested inside 'files' and 'db.json'
+        json_content = gist_data['files']['db.json']['content']
+        DB_DATA = json.loads(json_content)
+        logger.info("Successfully loaded database directly from Gist API.")
+    except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError) as e:
+        logger.error(f"FATAL: Could not load data from Gist API: {e}. Using empty DB.")
         DB_DATA = {"courses": {}, "stats": {"total_users": 0, "course_views": {}}, "users": []}
 
 def save_data_to_gist():
@@ -104,7 +106,7 @@ def save_user_id(user_id):
         DB_DATA.setdefault('stats', {})['total_users'] = len(users)
         save_data_to_gist()
 
-# --- Bot Texts ---
+# --- Bot Texts (No changes from here onwards, but included for completeness) ---
 COURSE_DETAILS_TEXT = """
 📚 *Course Details: {course_name}*
 
@@ -258,7 +260,7 @@ async def add_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             key = f"{original_key}_{counter}"
             counter += 1
         
-        DB_DATA['courses'][key] = {"name": name, "price": price, "status": status, "order": len(DB_DATA['courses']) + 1}
+        DB_DATA.setdefault('courses', {})[key] = {"name": name, "price": price, "status": status, "order": len(DB_DATA.get('courses', {})) + 1}
         save_data_to_gist()
         await update.message.reply_text(f"✅ Course `{escape_markdown(name)}` \(key: `{key}`\) added\.", parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
@@ -271,7 +273,7 @@ async def edit_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         args_str = " ".join(context.args)
         key, new_name, new_price_str, new_status = [p.strip() for p in args_str.split(';')]
         new_status = new_status.lower()
-        if key not in DB_DATA['courses']: raise ValueError("Course key not found")
+        if key not in DB_DATA.get('courses', {}): raise ValueError("Course key not found")
         if new_status not in ["available", "coming_soon"]: raise ValueError("Invalid status")
         new_price = int(new_price_str)
         if new_price < 0: raise ValueError("Negative price")
@@ -289,7 +291,7 @@ async def delete_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not is_admin(update): return
     try:
         key = context.args[0]
-        if key in DB_DATA['courses']:
+        if key in DB_DATA.get('courses', {}):
             del DB_DATA['courses'][key]
             save_data_to_gist()
             await update.message.reply_text(f"✅ Course `{key}` deleted\.", parse_mode=ParseMode.MARKDOWN_V2)
@@ -303,7 +305,7 @@ async def set_course_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     try:
         key, order_str = context.args
         order = int(order_str)
-        if key in DB_DATA['courses']:
+        if key in DB_DATA.get('courses', {}):
             DB_DATA['courses'][key]['order'] = order
             save_data_to_gist()
             await update.message.reply_text(f"✅ Order for course `{key}` set to {order}\.", parse_mode=ParseMode.MARKDOWN_V2)
@@ -425,6 +427,8 @@ async def forward_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user = update.effective_user
     course = context.user_data.get('selected_course', {'name': 'Not specified'})
     
+    context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user.id
+
     escaped_message = escape_markdown(update.message.text)
     forward_text = (
         f"📩 New message from {escape_markdown(user.full_name)} \(ID: `{user.id}`\)\n"
@@ -438,6 +442,9 @@ async def forward_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def forward_screenshot_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     course = context.user_data.get('selected_course', {'name': 'Not specified'})
+
+    context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user.id
+
     caption = (
         f"📸 New payment screenshot from: {escape_markdown(user.full_name)} \(ID: `{user.id}`\)\n"
         f"For course: *{escape_markdown(course['name'])}*\n\n"
@@ -450,24 +457,37 @@ async def forward_screenshot_to_admin(update: Update, context: ContextTypes.DEFA
 async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update) or not update.message.reply_to_message:
         return
-    
+
     original_msg = update.message.reply_to_message
     original_text = original_msg.text or original_msg.caption
-    
-    # This regex is more flexible and correctly finds the ID
-    match = re.search(r'ID: `(\d+)`', original_text)
-    
-    if not match:
-        await update.message.reply_text("❌ Could not find a user ID in the message you replied to\. Please reply to the original forwarded message\.", parse_mode=ParseMode.MARKDOWN_V2)
+    user_id = None
+
+    if original_text:
+        match = re.search(r'\(ID: `(\d+)`\)', original_text)
+        if match:
+            user_id = int(match.group(1))
+
+    if not user_id and original_msg.from_user.is_bot:
+        last_user_id_key = f"last_chat_with_{ADMIN_ID}"
+        if last_user_id_key in context.bot_data:
+            user_id = context.bot_data[last_user_id_key]
+
+    if not user_id:
+        await update.message.reply_text(
+            "❌ Could not determine which user to reply to\. Please reply to a message from a user, or use the `/reply <id> <msg>` command\.",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
         return
-    
-    user_id = int(match.group(1))
+
+    context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user_id
+
     reply_text = f"Admin replied:\n\n{update.message.text}"
     try:
         await context.bot.send_message(chat_id=user_id, text=reply_text)
-        await update.message.reply_text("✅ Reply sent successfully\.")
+        await update.message.reply_text("✅ Reply sent successfully\.", parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
-        await update.message.reply_text(f"❌ Failed to send message to user {user_id}\. Error: {escape_markdown(str(e))}")
+        await update.message.reply_text(f"❌ Failed to send message to user {user_id}\. Error: {escape_markdown(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+
 async def reply_by_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update): return
     try:
@@ -489,6 +509,8 @@ async def handle_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     if "Admin replied:" in update.message.reply_to_message.text:
+        context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user.id
+
         forward_text = f"↪️ Follow\-up from {escape_markdown(user.full_name)} \(ID: `{user.id}`\):\n\n{escape_markdown(update.message.text)}"
         await context.bot.send_message(chat_id=ADMIN_ID, text=forward_text, parse_mode=ParseMode.MARKDOWN_V2)
         await update.message.reply_text("✅ Your reply has been sent\.")
@@ -497,13 +519,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.error("Exception while handling an update:", exc_info=context.error)
     error_message = f"🚨 Bot Error Alert 🚨\n\nAn error occurred: {context.error}"
     try:
-        # Send error to admin without markdown to prevent parsing errors on the error message itself
         await context.bot.send_message(chat_id=ADMIN_ID, text=error_message)
     except Exception as e:
         logger.error(f"Failed to send error alert to admin: {e}")
 
 def main() -> None:
-    if not all([BOT_TOKEN, ADMIN_ID, GITHUB_USERNAME, GIST_ID, GITHUB_TOKEN]):
+    if not all([BOT_TOKEN, ADMIN_ID, GIST_ID, GITHUB_TOKEN]):
         logger.error("FATAL: One or more critical environment variables are missing.")
         return
 
@@ -522,8 +543,6 @@ def main() -> None:
             SELECTING_ACTION: [
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
                 CallbackQueryHandler(handle_action, pattern="^(talk_admin|buy_course|share_screenshot)$"),
-                # Regex to match anything that IS NOT one of the specific actions above.
-                # This makes it work for any dynamically added course key.
                 CallbackQueryHandler(course_selection_callback, pattern="^(?!main_menu$|talk_admin$|buy_course$|share_screenshot$).*$"),
             ],
             FORWARD_TO_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, forward_to_admin)],
