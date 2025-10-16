@@ -52,6 +52,8 @@ logger = logging.getLogger(__name__)
 # --- Helper Functions ---
 def escape_markdown(text: str) -> str:
     """Escapes special characters for Telegram MarkdownV2."""
+    if not isinstance(text, str):
+        return ""
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
@@ -107,13 +109,13 @@ COURSE_DETAILS_TEXT = """
 📚 *Course Details: {course_name}*
 
 Here's what you get:
-- Full Syllabus Coverage
-- 250+ High-Quality Video Lectures
-- Previous Year Questions (PYQs) Solved
-- Comprehensive Test Series
-- Regular Quizzes to Test Your Knowledge
-- Weekly Current Affairs Updates
-- Workbook & Study Materials
+\- Full Syllabus Coverage
+\- 250\+ High\-Quality Video Lectures
+\- Previous Year Questions \(PYQs\) Solved
+\- Comprehensive Test Series
+\- Regular Quizzes to Test Your Knowledge
+\- Weekly Current Affairs Updates
+\- Workbook & Study Materials
 """
 BUY_COURSE_TEXT = """
 ✅ *You are about to purchase: {course_name}*
@@ -121,13 +123,13 @@ BUY_COURSE_TEXT = """
 *Price: ₹{price}*
 
 By purchasing, you will get full access to our private channel which includes:
-- Full syllabus lectures
-- 250+ video lectures
-- Weekly current affairs
-- Workbook, Books, PYQs
-- Full Test Series
+\- Full syllabus lectures
+\- 250\+ video lectures
+\- Weekly current affairs
+\- Workbook, Books, PYQs
+\- Full Test Series
 
-Please proceed with the payment. If you have already paid, share the screenshot with us.
+Please proceed with the payment\. If you have already paid, share the screenshot with us\.
 """
 HELP_TEXT = """
 👋 *Bot Help Guide*
@@ -135,35 +137,35 @@ HELP_TEXT = """
 Here's how to use me:
 
 1️⃣ *Browse Courses*
-- Use the buttons on the main menu to see details about each course.
+\- Use the buttons on the main menu to see details about each course\.
 
 2️⃣ *Talk to the Admin*
-- Select a course, then click *"💬 Talk to Admin"*.
-- Type and send your message. It will be forwarded to the admin.
-- The admin's reply will be sent to you here.
+\- Select a course, then click *"💬 Talk to Admin"*
+\- Type and send your message\. It will be forwarded to the admin\.
+\- The admin's reply will be sent to you here\.
 
 3️⃣ *Buy a Course*
-- After selecting a course, click *"🛒 Buy Full Course"*.
-- Use the payment button to pay.
-- After paying, click *"✅ Already Paid? Share Screenshot"* and send your payment screenshot.
+\- After selecting a course, click *"🛒 Buy Full Course"*
+\- Use the payment button to pay\.
+\- After paying, click *"✅ Already Paid? Share Screenshot"* and send your payment screenshot\.
 
-If you have any issues, feel free to use the "Talk to Admin" feature.
+If you have any issues, feel free to use the "Talk to Admin" feature\.
 """
 ADMIN_HELP_TEXT = """
 👑 *Admin Panel Commands*
 
-`/admin` - Show this panel.
-`/listcourses` - List all courses.
+`/admin` \- Show this panel\.
+`/listcourses` \- List all courses\.
 `/addcourse <name>; <price>; <status>`
   _Ex: /addcourse New Course; 199; available_
 `/editcourse <key>; <name>; <price>; <status>`
-  _Ex: /editcourse new_course; "Adv Course"; 249; coming_soon_
-`/delcourse <key>` - Remove a course.
-`/set_order <key> <order_num>` - Change course display order.
-  _Ex: /set_order new_course 1_
-`/stats` - View bot usage statistics and user list.
-`/broadcast <message>` - Send a message to all users.
-`/reply <user_id> <message>` - Send a direct message to a user.
+  _Ex: /editcourse new\_course; "Adv Course"; 249; coming\_soon_
+`/delcourse <key>` \- Remove a course\.
+`/set_order <key> <order_num>` \- Change course display order\.
+  _Ex: /set\_order new\_course 1_
+`/stats` \- View bot usage statistics and user list\.
+`/broadcast <message>` \- Send a message to all users\.
+`/reply <user_id> <message>` \- Send a direct message to a user\.
 
 _Statuses: `available` or `coming_soon`_
 """
@@ -224,7 +226,7 @@ async def list_courses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not is_admin(update): return
     courses = DB_DATA.get('courses', {})
     if not courses:
-        await update.message.reply_text("No courses defined. Use `/addcourse`.", parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text("No courses defined\. Use `/addcourse`\.", parse_mode=ParseMode.MARKDOWN_V2)
         return
     courses_info = "*📚 Current Courses:*\n\n"
     sorted_courses = sorted(courses.items(), key=lambda item: item[1].get('order', 999))
@@ -235,7 +237,7 @@ async def list_courses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"*Price:* ₹{course['price']}\n"
             f"*Status:* {escape_markdown(course.get('status', 'N/A').replace('_', ' ').title())}\n"
             f"*Order:* {course.get('order', 'Not Set')}\n"
-            f"----------\n"
+            f"\-\-\-\-\-\-\-\-\-\-\n"
         )
     await update.message.reply_text(courses_info, parse_mode=ParseMode.MARKDOWN_V2)
 
@@ -258,7 +260,7 @@ async def add_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
         DB_DATA['courses'][key] = {"name": name, "price": price, "status": status, "order": len(DB_DATA['courses']) + 1}
         save_data_to_gist()
-        await update.message.reply_text(f"✅ Course `{escape_markdown(name)}` (key: `{key}`) added.", parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(f"✅ Course `{escape_markdown(name)}` \(key: `{key}`\) added\.", parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
         logger.error(f"Error in add_course: {e}")
         await update.message.reply_text("Usage: `/addcourse <name>; <price>; <status>`\n_Example: /addcourse New Course; 199; available_", parse_mode=ParseMode.MARKDOWN_V2)
@@ -278,7 +280,7 @@ async def edit_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         DB_DATA['courses'][key]['price'] = new_price
         DB_DATA['courses'][key]['status'] = new_status
         save_data_to_gist()
-        await update.message.reply_text(f"✅ Course `{key}` updated.", parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(f"✅ Course `{key}` updated\.", parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
         logger.error(f"Error in edit_course: {e}")
         await update.message.reply_text("Usage: `/editcourse <key>; <new_name>; <new_price>; <new_status>`", parse_mode=ParseMode.MARKDOWN_V2)
@@ -290,9 +292,9 @@ async def delete_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if key in DB_DATA['courses']:
             del DB_DATA['courses'][key]
             save_data_to_gist()
-            await update.message.reply_text(f"✅ Course `{key}` deleted.", parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(f"✅ Course `{key}` deleted\.", parse_mode=ParseMode.MARKDOWN_V2)
         else:
-            await update.message.reply_text(f"❌ Course with key `{key}` not found.", parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(f"❌ Course with key `{key}` not found\.", parse_mode=ParseMode.MARKDOWN_V2)
     except IndexError:
         await update.message.reply_text("Usage: `/delcourse <key>`", parse_mode=ParseMode.MARKDOWN_V2)
 
@@ -304,9 +306,9 @@ async def set_course_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if key in DB_DATA['courses']:
             DB_DATA['courses'][key]['order'] = order
             save_data_to_gist()
-            await update.message.reply_text(f"✅ Order for course `{key}` set to {order}.", parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(f"✅ Order for course `{key}` set to {order}\.", parse_mode=ParseMode.MARKDOWN_V2)
         else:
-            await update.message.reply_text(f"❌ Course with key `{key}` not found.", parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(f"❌ Course with key `{key}` not found\.", parse_mode=ParseMode.MARKDOWN_V2)
     except (IndexError, ValueError):
         await update.message.reply_text("Usage: `/set_order <key> <order_number>`", parse_mode=ParseMode.MARKDOWN_V2)
 
@@ -317,25 +319,25 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     
     course_views = stats.get('course_views', {})
     if not course_views:
-        stats_text += "  _No course views yet._\n"
+        stats_text += "  _No course views yet\._\n"
     else:
         sorted_views = sorted(course_views.items(), key=lambda item: item[1], reverse=True)
         for key, views in sorted_views:
-            course_name = DB_DATA.get('courses', {}).get(key, {}).get('name', f'Unknown ({key})')
-            stats_text += f"  - {escape_markdown(course_name)}: `{views}` views\n"
+            course_name = DB_DATA.get('courses', {}).get(key, {}).get('name', f'Unknown \({key}\)')
+            stats_text += f"  \- {escape_markdown(course_name)}: `{views}` views\n"
 
     stats_text += "\n*User List:*\n"
     user_ids = DB_DATA.get('users', [])
     if not user_ids:
-        stats_text += "  _No users have started the bot._\n"
+        stats_text += "  _No users have started the bot\._\n"
     else:
         for user_id in user_ids:
             try:
                 chat = await context.bot.get_chat(user_id)
-                username = f"(@{chat.username})" if chat.username else ""
-                stats_text += f"  - {escape_markdown(chat.full_name)} {username} ID: `{user_id}`\n"
+                username = f"\(@{escape_markdown(chat.username)}\)" if chat.username else ""
+                stats_text += f"  \- {escape_markdown(chat.full_name)} {username} ID: `{user_id}`\n"
             except Exception as e:
-                stats_text += f"  - Could not fetch info for user ID: `{user_id}` (Error: {e})\n"
+                stats_text += f"  \- Could not fetch info for user ID: `{user_id}` \(Error: {escape_markdown(str(e))}\)\n"
 
     await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN_V2)
 
@@ -350,12 +352,13 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sent_count, failed_count = 0, 0
     for user_id in user_ids:
         try:
+            # Broadcasts are sent without markdown to avoid parsing errors with user-provided content.
             await context.bot.send_message(chat_id=int(user_id), text=message)
             sent_count += 1
         except Exception as e:
             failed_count += 1
             logger.error(f"Failed to send broadcast to {user_id}: {e}")
-    await update.message.reply_text(f"📢 Broadcast finished.\nSent: {sent_count}\nFailed: {failed_count}")
+    await update.message.reply_text(f"📢 Broadcast finished\.\nSent: {sent_count}\nFailed: {failed_count}", parse_mode=ParseMode.MARKDOWN_V2)
 
 # --- User Interaction Handlers ---
 async def course_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -377,7 +380,7 @@ async def course_selection_callback(update: Update, context: ContextTypes.DEFAUL
 
         if course.get('status') == 'coming_soon':
             keyboard = [[InlineKeyboardButton("⬅️ Back to Courses", callback_data="main_menu")]]
-            await query.edit_message_text(text=f"*{escape_markdown(course['name'])}* is launching soon! Stay tuned.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
+            await query.edit_message_text(text=f"*{escape_markdown(course['name'])}* is launching soon\! Stay tuned\.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
             return SELECTING_ACTION
 
         buttons = [
@@ -397,11 +400,11 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     course_key = context.user_data.get('selected_course_key')
 
     if not course or not course_key:
-        await query.edit_message_text("Something went wrong. Please /start over.")
+        await query.edit_message_text("Something went wrong\. Please /start over\.")
         return ConversationHandler.END
 
     if action == "talk_admin":
-        await query.edit_message_text(text="Please type your message to the admin and send it.")
+        await query.edit_message_text(text="Please type your message to the admin and send it\.")
         return FORWARD_TO_ADMIN
     
     elif action == "buy_course":
@@ -415,7 +418,7 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return SELECTING_ACTION
 
     elif action == "share_screenshot":
-        await query.edit_message_text(text="Please send the screenshot of your payment now.")
+        await query.edit_message_text(text="Please send the screenshot of your payment now\.")
         return FORWARD_SCREENSHOT
 
 async def forward_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -429,7 +432,7 @@ async def forward_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         f"Message:\n{escaped_message}"
     )
     await context.bot.send_message(chat_id=ADMIN_ID, text=forward_text, parse_mode=ParseMode.MARKDOWN_V2)
-    await update.message.reply_text("✅ Your message has been sent to the admin. They will reply to you here shortly.")
+    await update.message.reply_text("✅ Your message has been sent to the admin\. They will reply to you here shortly\.")
     return await main_menu_from_message(update, context)
 
 async def forward_screenshot_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -441,7 +444,7 @@ async def forward_screenshot_to_admin(update: Update, context: ContextTypes.DEFA
         f"Reply to this message to send the course link to the user\."
     )
     await context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, caption=caption, parse_mode=ParseMode.MARKDOWN_V2)
-    await update.message.reply_text("✅ Screenshot received! The admin will verify it and send you the course link here soon.")
+    await update.message.reply_text("✅ Screenshot received\! The admin will verify it and send you the course link here soon\.")
     return await main_menu_from_message(update, context)
 
 async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -453,16 +456,16 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     match = re.search(r'\(ID: `(\d+)`\)', original_text)
     if not match:
-        await update.message.reply_text("❌ Could not find a user ID in the message you replied to. Please reply to the original forwarded message.")
+        await update.message.reply_text("❌ Could not find a user ID in the message you replied to\. Please reply to the original forwarded message\.")
         return
     
     user_id = int(match.group(1))
     reply_text = f"Admin replied:\n\n{update.message.text}"
     try:
         await context.bot.send_message(chat_id=user_id, text=reply_text)
-        await update.message.reply_text("✅ Reply sent successfully.")
+        await update.message.reply_text("✅ Reply sent successfully\.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Failed to send message to user {user_id}. Error: {e}")
+        await update.message.reply_text(f"❌ Failed to send message to user {user_id}\. Error: {escape_markdown(str(e))}")
 
 async def reply_by_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update): return
@@ -473,11 +476,11 @@ async def reply_by_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         reply_text = f"Admin replied:\n\n{message}"
         await context.bot.send_message(chat_id=user_id, text=reply_text)
-        await update.message.reply_text(f"✅ Message sent to user ID `{user_id}`.")
+        await update.message.reply_text(f"✅ Message sent to user ID `{user_id}`\.", parse_mode=ParseMode.MARKDOWN_V2)
     except (IndexError, ValueError):
         await update.message.reply_text("Usage: `/reply <user_id> <message>`", parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
-        await update.message.reply_text(f"❌ Failed to send. Error: {e}")
+        await update.message.reply_text(f"❌ Failed to send\. Error: {escape_markdown(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
 
 async def handle_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -485,14 +488,15 @@ async def handle_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     if "Admin replied:" in update.message.reply_to_message.text:
-        forward_text = f"↪️ Follow-up from {escape_markdown(user.full_name)} \(ID: `{user.id}`\):\n\n{escape_markdown(update.message.text)}"
+        forward_text = f"↪️ Follow\-up from {escape_markdown(user.full_name)} \(ID: `{user.id}`\):\n\n{escape_markdown(update.message.text)}"
         await context.bot.send_message(chat_id=ADMIN_ID, text=forward_text, parse_mode=ParseMode.MARKDOWN_V2)
-        await update.message.reply_text("✅ Your reply has been sent.")
+        await update.message.reply_text("✅ Your reply has been sent\.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Exception while handling an update:", exc_info=context.error)
     error_message = f"🚨 Bot Error Alert 🚨\n\nAn error occurred: {context.error}"
     try:
+        # Send error to admin without markdown to prevent parsing errors on the error message itself
         await context.bot.send_message(chat_id=ADMIN_ID, text=error_message)
     except Exception as e:
         logger.error(f"Failed to send error alert to admin: {e}")
