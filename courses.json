@@ -13,11 +13,25 @@
             }
         }
     },
+        "rrb_ssc_je_madeeasy_nontech": {
+        "name": "RRB-SSC JE MADE EASY (NON TECH)",
+        "price": 49,
+        "status": "available",
+        "order": 2,
+        "demo_lectures": {
+            "channel_id": -1003057734979,
+            "subjects": {
+                "fluid_mechanics": {"button_text": "Fluid Mechanics 💧", "message_id": 3},
+                "thermodynamics": {"button_text": "Thermodynamics 🔥", "message_id": 306},
+                "heat_transfer": {"button_text": "Heat Transfer ☀️", "message_id": 145}
+            }
+        }
+    },
     "gate_ese_madeeasy": {
         "name": "GATE-ESE Made Easy",
         "price": 99,
         "status": "available",
-        "order": 2,
+        "order": 3,
         "demo_lectures": {
             "channel_id": -1002838375841,
             "subjects": {
@@ -32,7 +46,7 @@
         "name": "Rank Improvement Course Made Easy",
         "price": 99,
         "status": "available",
-        "order": 3,
+        "order": 4,
         "demo_lectures": {
             "channel_id": -1002749814067,
             "subjects": {
@@ -46,7 +60,7 @@
         "name": "GATE-ESE PW",
         "price": 49,
         "status": "available",
-        "order": 4,
+        "order": 5,
         "demo_lectures": {
             "channel_id": null,
             "subjects": {}
@@ -56,7 +70,7 @@
         "name": "RRB-SSC JE PW",
         "price": 49,
         "status": "coming_soon",
-        "order": 5,
+        "order": 6,
         "demo_lectures": {
             "channel_id": null,
             "subjects": {}
