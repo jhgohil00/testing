@@ -17,8 +17,9 @@ from telegram.ext import (
     ConversationHandler,
 )
 from telegram.constants import ParseMode
+from telegram.error import TelegramError
 
-# --- Web Server to satisfy Render's health checks ---
+# --- Web Server ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -39,26 +40,26 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 MONGO_DB_URL = os.environ.get("MONGO_DB_URL")
 RAZORPAY_LINK = os.environ.get("RAZORPAY_LINK", "https://razorpay.me/@gateprep?amount=CVDUr6Uxp2FOGZGwAHntNg%3D%3D")
 
-# --- Logging Setup ---
+# --- Logging ---
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Load Local Course Data (from courses.json) ---
+# --- Load Course Data ---
 COURSES_DATA = {}
 try:
     with open('courses.json', 'r', encoding='utf-8') as f:
         COURSES_DATA = json.load(f)
     logger.info(f"Successfully loaded {len(COURSES_DATA)} courses from courses.json.")
 except FileNotFoundError:
-    logger.error("FATAL: courses.json file not found. Bot cannot start without it.")
+    logger.error("FATAL: courses.json not found.")
     exit()
-except json.JSONDecodeError:
-    logger.error("FATAL: courses.json contains invalid JSON. Please fix the file.")
+except json.JSONDecodeError as e:
+    logger.error(f"FATAL: courses.json contains invalid JSON: {e}")
     exit()
 
-# --- Database Connection (for Users & Stats) ---
+# --- Database Connection ---
 try:
     client = pymongo.MongoClient(MONGO_DB_URL)
     db = client.get_default_database()
@@ -134,10 +135,10 @@ ADMIN_HELP_TEXT = """
 *To add, edit, or remove courses, please edit the `courses.json` file in the GitHub repository and commit your changes.*
 """
 # --- Conversation States ---
-SELECTING_ACTION, SELECTING_DEMO_SUBJECT, FORWARD_TO_ADMIN, FORWARD_SCREENSHOT = range(4)
+SELECTING_ACTION, SELECTING_DEMO_SUBJECT, FORWARD_TO_ADMIN, FORWARD_SCREENSHOT = map(chr, range(4)) # Use characters for states
 
 # --- Command & Message Handlers ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     user = update.effective_user
     users_collection.update_one(
         {"_id": user.id},
@@ -155,32 +156,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         keyboard.append([InlineKeyboardButton(button_text, callback_data=course_key)])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        f"👋 Welcome, {user.first_name}!\n\nPlease select a course to view details or use /help for instructions.",
-        reply_markup=reply_markup
-    )
+    # Use reply_text for /start, edit_message_text otherwise
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+             "Please select a course to view details:",
+             reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            f"👋 Welcome, {user.first_name}!\n\nPlease select a course to view details or use /help for instructions.",
+            reply_markup=reply_markup
+        )
     return SELECTING_ACTION
 
-async def main_menu_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-
-    keyboard = []
-    sorted_courses = sorted(COURSES_DATA.items(), key=lambda item: item[1].get('order', 999))
-    for course_key, course in sorted_courses:
-        button_text = f"{course['name']} - ₹{course['price']}"
-        if course.get('status') == 'coming_soon':
-            button_text += " (Coming Soon)"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=course_key)])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        "Please select a course to view details:",
-        reply_markup=reply_markup
-    )
-    return SELECTING_ACTION
-
-async def main_menu_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def main_menu_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     keyboard = []
     sorted_courses = sorted(COURSES_DATA.items(), key=lambda item: item[1].get('order', 999))
     for course_key, course in sorted_courses:
@@ -196,7 +185,7 @@ async def main_menu_from_message(update: Update, context: ContextTypes.DEFAULT_T
     )
     return SELECTING_ACTION
 
-async def course_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def course_details_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     query = update.callback_query
     await query.answer()
     course_key = query.data
@@ -204,12 +193,9 @@ async def course_selection_callback(update: Update, context: ContextTypes.DEFAUL
     course = COURSES_DATA.get(course_key)
 
     if course:
-        # Store selected course in user_data for other handlers
-        context.user_data['selected_course_key'] = course_key
-        context.user_data['selected_course'] = course # Store the whole course object
+        context.user_data['selected_course_key'] = course_key # Store key for potential use
 
         buttons = []
-        # Add Demo button if subjects exist
         if course.get("demo_lectures", {}).get("subjects"):
              buttons.append([InlineKeyboardButton("🎬 Watch Demo", callback_data=f"action_demo_{course_key}")])
 
@@ -222,40 +208,54 @@ async def course_selection_callback(update: Update, context: ContextTypes.DEFAUL
         reply_markup = InlineKeyboardMarkup(buttons)
         course_details = COURSE_DETAILS_TEXT.format(course_name=escape_markdown(course['name']))
         await query.edit_message_text(text=course_details, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        return SELECTING_ACTION # Stay in the main action selection state
     else:
-        # Handle case where course_key might be invalid (e.g., old button)
-        await query.edit_message_text("Sorry, this course is no longer available. Please select another.")
-        return await main_menu_from_callback(update, context) # Show main menu again
+        await query.edit_message_text("Sorry, this course seems to be missing. Please select another.")
+        # Trigger the main menu display again
+        query.data = "main_menu"
+        return await start(update, context)
 
-    return SELECTING_ACTION
 
-async def handle_demo_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def demo_subject_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     query = update.callback_query
     await query.answer()
-    course_key = query.data.split('_')[-1]
+    # Extract course key reliably, whether coming from course details or back button
+    if query.data.startswith("action_demo_"):
+        course_key = query.data.split('_')[-1]
+    else: # Coming back from sending a demo
+        course_key = context.user_data.get('selected_course_key')
 
+    if not course_key:
+        await query.edit_message_text("Error: Could not determine the course. Please start again.")
+        query.data = "main_menu"
+        return await start(update, context)
+
+    context.user_data['selected_course_key'] = course_key # Ensure it's stored
     course = COURSES_DATA.get(course_key)
+
     if course and course.get("demo_lectures", {}).get("subjects"):
         subjects = course["demo_lectures"]["subjects"]
         keyboard = []
         for subject_key, details in subjects.items():
             keyboard.append([InlineKeyboardButton(details["button_text"], callback_data=f"demo_{course_key}_{subject_key}")])
-        # Use course_key for the back button to trigger course_selection_callback
+        # Back button goes back to course details menu
         keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data=course_key)])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text("Please select a subject to watch the demo lecture:", reply_markup=reply_markup)
-        return SELECTING_DEMO_SUBJECT
+        return SELECTING_DEMO_SUBJECT # Move to demo subject selection state
     else:
-        # Go back to the course details if no demos found (shouldn't happen if button was shown)
-        await query.edit_message_text("No demo lectures available for this course.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=course_key)]]))
-        return SELECTING_ACTION # Go back to the course details view
+        await query.edit_message_text("No demo lectures available for this course.",
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=course_key)]]))
+        return SELECTING_ACTION # Go back to course details
 
-async def send_demo_lecture(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+
+async def send_demo_lecture(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     query = update.callback_query
-    await query.answer("Forwarding lecture, please wait...")
+    await query.answer("Forwarding lecture...")
 
     _, course_key, subject_key = query.data.split('_')
+    context.user_data['selected_course_key'] = course_key # Store for back button context
 
     course = COURSES_DATA.get(course_key)
     if course:
@@ -263,84 +263,89 @@ async def send_demo_lecture(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         subject_info = demo_info.get("subjects", {}).get(subject_key)
 
         if subject_info and demo_info.get("channel_id"):
+            channel_id = demo_info["channel_id"]
+            message_id = subject_info["message_id"]
+            logger.info(f"Attempting to copy msg {message_id} from chat {channel_id} for user {query.from_user.id}")
             try:
                 await context.bot.copy_message(
                     chat_id=query.from_user.id,
-                    from_chat_id=demo_info["channel_id"],
-                    message_id=subject_info["message_id"]
+                    from_chat_id=channel_id,
+                    message_id=message_id
                 )
-                await query.message.reply_text("Here is the demo lecture:") # Confirmation
+                logger.info("Copy successful.")
+                # Don't edit the message here, let the user view the video
+            except TelegramError as e:
+                logger.error(f"TelegramError copying message: {e}")
+                # Check for specific errors if needed (e.g., bot not admin, message not found)
+                if "bot is not a member" in str(e):
+                     await query.message.reply_text("Error: The bot needs to be an admin in the source channel.")
+                     logger.error("BOT IS NOT ADMIN IN SOURCE CHANNEL.")
+                elif "message to copy not found" in str(e):
+                     await query.message.reply_text("Error: The demo video message could not be found.")
+                     logger.error(f"MESSAGE ID {message_id} NOT FOUND IN CHANNEL {channel_id}.")
+                else:
+                    await query.message.reply_text("Sorry, there was an error fetching the lecture.")
             except Exception as e:
-                logger.error(f"Failed to copy message (course: {course_key}, subject: {subject_key}, msg_id: {subject_info.get('message_id')} from channel: {demo_info.get('channel_id')}): {e}")
-                await query.message.reply_text("Sorry, there was an error fetching the lecture. The admin has been notified.")
-                # Maybe send an alert to admin here
+                logger.error(f"Generic error copying message: {e}")
+                await query.message.reply_text("Sorry, an unexpected error occurred.")
         else:
-             await query.message.reply_text("Sorry, the lecture information seems to be missing.")
+             logger.warning(f"Demo info missing for course {course_key}, subject {subject_key}")
+             await query.message.reply_text("Sorry, the lecture information is missing.")
 
-    # Always return to the subject selection menu after attempting to send
-    query.data = f"action_demo_{course_key}" # Prepare data for handle_demo_selection
-    return await handle_demo_selection(update, context)
+    # Stay in the SELECTING_DEMO_SUBJECT state so the back button works correctly
+    return SELECTING_DEMO_SUBJECT
 
 
-async def handle_talk_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    # Retrieve course info if needed, though it might already be in context.user_data
-    course_key = query.data.split('_')[-1]
-    course = COURSES_DATA.get(course_key)
-    if course:
-        context.user_data['selected_course'] = course # Ensure it's set
-    await query.edit_message_text(text="Please type your message to the admin and send it\.")
-    return FORWARD_TO_ADMIN
-
-async def handle_buy_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def buy_course_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     query = update.callback_query
     await query.answer()
     course_key = query.data.split('_')[-1]
-    
-    # *** FIX: Directly get course from COURSES_DATA using the key ***
+    context.user_data['selected_course_key'] = course_key # Store for context
+
     course = COURSES_DATA.get(course_key)
-    
+
     if not course:
-        await query.edit_message_text("Error: Course not found. Please go /start")
-        return await main_menu_from_callback(update, context) # Show main menu
-
-    # Store in context for the next step (screenshot)
-    context.user_data['selected_course'] = course
-    context.user_data['selected_course_key'] = course_key
-
+        await query.edit_message_text("Error: Course not found. Please start again.")
+        query.data = "main_menu"
+        return await start(update, context)
 
     keyboard = [
         [InlineKeyboardButton(f"💳 Pay ₹{course['price']} Now", url=RAZORPAY_LINK)],
         [InlineKeyboardButton("✅ Already Paid? Share Screenshot", callback_data=f"action_screenshot_{course_key}")],
-        [InlineKeyboardButton("⬅️ Back", callback_data=course_key)] # Back button goes to course details
+        [InlineKeyboardButton("⬅️ Back", callback_data=course_key)] # Back goes to course details
     ]
     buy_text = BUY_COURSE_TEXT.format(course_name=escape_markdown(course['name']), price=course['price'])
     await query.edit_message_text(text=buy_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
-    return SELECTING_ACTION # Stay in the main action selection state
+    return SELECTING_ACTION # Stay in action selection
 
-async def handle_share_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def prompt_for_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     query = update.callback_query
     await query.answer()
-    # Ensure course context is still available
     course_key = query.data.split('_')[-1]
-    course = COURSES_DATA.get(course_key)
-    if course:
-        context.user_data['selected_course'] = course # Refresh context just in case
-        context.user_data['selected_course_key'] = course_key
+    context.user_data['selected_course_key'] = course_key # Store context
     await query.edit_message_text(text="Please send the screenshot of your payment now\.")
-    return FORWARD_SCREENSHOT
+    return FORWARD_SCREENSHOT # Move to screenshot state
 
-async def forward_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def prompt_for_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    query = update.callback_query
+    await query.answer()
+    course_key = query.data.split('_')[-1]
+    context.user_data['selected_course_key'] = course_key # Store context
+    await query.edit_message_text(text="Please type your message to the admin and send it\.")
+    return FORWARD_TO_ADMIN # Move to admin message state
+
+
+async def forward_to_admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     user = update.effective_user
-    course = context.user_data.get('selected_course', {'name': 'Not specified'})
+    course_key = context.user_data.get('selected_course_key')
+    course_name = COURSES_DATA.get(course_key, {}).get('name', 'Not specified')
 
     context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user.id
 
     escaped_message = escape_markdown(update.message.text)
     forward_text = (
         f"📩 New message from {escape_markdown(user.full_name)} \(ID: `{user.id}`\)\n"
-        f"Regarding course: *{escape_markdown(course.get('name', 'N/A'))}*\n\n" # Use .get() for safety
+        f"Regarding course: *{escape_markdown(course_name)}*\n\n"
         f"Message:\n{escaped_message}"
     )
     try:
@@ -350,27 +355,33 @@ async def forward_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         logger.error(f"Failed to forward message to admin: {e}")
         await update.message.reply_text("❌ Sorry, there was an error sending your message.")
 
-    return await main_menu_from_message(update, context)
+    return await main_menu_from_message(update, context) # Show main menu buttons again
 
-async def forward_screenshot_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def forward_screenshot_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     user = update.effective_user
-    course = context.user_data.get('selected_course', {'name': 'Not specified'})
+    course_key = context.user_data.get('selected_course_key')
+    course_name = COURSES_DATA.get(course_key, {}).get('name', 'Not specified')
+
 
     context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user.id
 
     caption = (
         f"📸 New payment screenshot from: {escape_markdown(user.full_name)} \(ID: `{user.id}`\)\n"
-        f"For course: *{escape_markdown(course.get('name', 'N/A'))}*\n\n" # Use .get() for safety
+        f"For course: *{escape_markdown(course_name)}*\n\n"
         f"Reply to this message to send the course link to the user\."
     )
     try:
-        await context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, caption=caption, parse_mode=ParseMode.MARKDOWN_V2)
-        await update.message.reply_text("✅ Screenshot received\! The admin will verify it and send you the course link here soon\.")
+        if update.message.photo:
+            await context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, caption=caption, parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text("✅ Screenshot received\! The admin will verify it and send you the course link here soon\.")
+        else:
+            await update.message.reply_text("Please send a photo screenshot.")
+            return FORWARD_SCREENSHOT # Stay in this state if it wasn't a photo
     except Exception as e:
         logger.error(f"Failed to forward screenshot to admin: {e}")
         await update.message.reply_text("❌ Sorry, there was an error sending your screenshot.")
 
-    return await main_menu_from_message(update, context)
+    return await main_menu_from_message(update, context) # Show main menu buttons again
 
 # --- Admin Handlers ---
 def is_admin(update: Update) -> bool:
@@ -389,13 +400,16 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     total_users = users_collection.count_documents({})
     stats_text = f"📊 *Bot Statistics*\n\n*Total Users:* `{total_users}`\n\n*User List:*\n"
 
-    users = list(users_collection.find())
+    users = list(users_collection.find().limit(200)) # Limit to avoid overly long messages
     if not users:
         stats_text += "  _No users have started the bot\._\n"
     else:
         for user in users:
             username = f"\(@{escape_markdown(user.get('username', ''))}\)" if user.get('username') else ""
             stats_text += f"  \- {escape_markdown(user.get('first_name', 'N/A'))} {username} ID: `{user['_id']}`\n"
+        if len(users) == 200:
+            stats_text += "\n_Note: User list truncated at 200 entries\._"
+
 
     await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN_V2)
 
@@ -408,13 +422,14 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     user_ids = [user["_id"] for user in users_collection.find({}, {"_id": 1})]
     sent_count, failed_count = 0, 0
+    await update.message.reply_text(f"Starting broadcast to {len(user_ids)} users...")
     for user_id in user_ids:
         try:
             await context.bot.send_message(chat_id=int(user_id), text=message)
             sent_count += 1
         except Exception as e:
             failed_count += 1
-            logger.error(f"Failed to send broadcast to {user_id}: {e}")
+            logger.warning(f"Failed to send broadcast to {user_id}: {e}")
     await update.message.reply_text(f"📢 Broadcast finished\.\nSent: {sent_count}\nFailed: {failed_count}", parse_mode=ParseMode.MARKDOWN_V2)
 
 async def reply_by_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -426,13 +441,14 @@ async def reply_by_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         reply_text = f"Admin replied:\n\n{message}"
         await context.bot.send_message(chat_id=user_id, text=reply_text)
+        context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user_id # Set context for potential replies
         await update.message.reply_text(f"✅ Message sent to user ID `{user_id}`\.", parse_mode=ParseMode.MARKDOWN_V2)
     except (IndexError, ValueError):
         await update.message.reply_text("Usage: `/reply <user_id> <message>`", parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to send\. Error: {escape_markdown(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
 
-async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def reply_to_user_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update) or not update.message.reply_to_message:
         return
 
@@ -440,11 +456,13 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     original_text = original_msg.text or original_msg.caption
     user_id = None
 
+    # Try finding ID in the replied message text
     if original_text:
         match = re.search(r'\(ID: `(\d+)`\)', original_text)
         if match:
             user_id = int(match.group(1))
 
+    # If not found, check bot_data context if replying to bot's own message
     if not user_id and original_msg.from_user.is_bot:
         last_user_id_key = f"last_chat_with_{ADMIN_ID}"
         if last_user_id_key in context.bot_data:
@@ -452,12 +470,12 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if not user_id:
         await update.message.reply_text(
-            "❌ Could not determine which user to reply to\. Please reply to a message from a user, or use the `/reply <id> <msg>` command\.",
+            "❌ Could not determine which user to reply to\. Please reply directly to a message *from* the user \(containing their ID\) or use the `/reply <id> <msg>` command\.",
             parse_mode=ParseMode.MARKDOWN_V2
         )
         return
 
-    context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user_id
+    context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user_id # Update context
 
     reply_text = f"Admin replied:\n\n{update.message.text}"
     try:
@@ -469,20 +487,23 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def handle_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if is_admin(update) or not update.message.reply_to_message or not update.message.reply_to_message.from_user.is_bot:
-        return
+        return # Ignore admin replies to self, non-replies, replies to users
 
     if "Admin replied:" in update.message.reply_to_message.text:
-        context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user.id
+        context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user.id # Store context
 
         forward_text = f"↪️ Follow\-up from {escape_markdown(user.full_name)} \(ID: `{user.id}`\):\n\n{escape_markdown(update.message.text)}"
         await context.bot.send_message(chat_id=ADMIN_ID, text=forward_text, parse_mode=ParseMode.MARKDOWN_V2)
         await update.message.reply_text("✅ Your reply has been sent\.")
+    # else: ignore user replies to messages other than the admin's reply
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Exception while handling an update: {update}", exc_info=context.error)
-    # Don't send the full error message to the admin to avoid potential markdown issues with it
+    # Don't send full error message to admin
     error_message = f"🚨 Bot Error Alert 🚨\n\nAn error occurred. Check the logs."
     try:
+        if isinstance(context.error, TelegramError):
+             error_message += f"\nError type: {type(context.error).__name__}"
         await context.bot.send_message(chat_id=ADMIN_ID, text=error_message)
     except Exception as e:
         logger.error(f"Failed to send error alert to admin: {e}")
@@ -503,37 +524,38 @@ def main() -> None:
         entry_points=[CommandHandler("start", start)],
         states={
             SELECTING_ACTION: [
-                CallbackQueryHandler(main_menu_from_callback, pattern="^main_menu$"),
-                CallbackQueryHandler(handle_demo_selection, pattern="^action_demo_"),
-                CallbackQueryHandler(handle_talk_to_admin, pattern="^action_talk_admin_"),
-                CallbackQueryHandler(handle_buy_course, pattern="^action_buy_"),
-                CallbackQueryHandler(handle_share_screenshot, pattern="^action_screenshot_"),
-                # This pattern now handles both course selection AND back buttons from Buy/Demo
-                CallbackQueryHandler(course_selection_callback, pattern="^(?!main_menu$|action_demo_|action_talk_admin_|action_buy_|action_screenshot_|demo_).*$"),
+                CallbackQueryHandler(start, pattern="^main_menu$"), # Use start for main menu
+                CallbackQueryHandler(demo_subject_menu, pattern="^action_demo_"),
+                CallbackQueryHandler(prompt_for_admin_message, pattern="^action_talk_admin_"),
+                CallbackQueryHandler(buy_course_menu, pattern="^action_buy_"),
+                CallbackQueryHandler(prompt_for_screenshot, pattern="^action_screenshot_"),
+                # Handles course selection & Back button from Buy Course/Demo Subject
+                CallbackQueryHandler(course_details_menu, pattern="^(?!main_menu$|action_demo_|action_talk_admin_|action_buy_|action_screenshot_|demo_).*$"),
             ],
             SELECTING_DEMO_SUBJECT: [
                 CallbackQueryHandler(send_demo_lecture, pattern="^demo_"),
-                # Back button from demo subject list goes back to course details
-                CallbackQueryHandler(course_selection_callback, pattern="^(?!demo_).*$"),
+                # Back button goes back to course details
+                CallbackQueryHandler(course_details_menu, pattern="^(?!demo_).*$"),
             ],
-            FORWARD_TO_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, forward_to_admin)],
-            FORWARD_SCREENSHOT: [MessageHandler(filters.PHOTO, forward_screenshot_to_admin)],
+            FORWARD_TO_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, forward_to_admin_handler)],
+            FORWARD_SCREENSHOT: [MessageHandler(filters.PHOTO, forward_screenshot_handler)],
         },
-        fallbacks=[CommandHandler("start", start)], # Go back to start on any unknown command/message
+        fallbacks=[CommandHandler("start", start)], # Go back to start on any unknown command/message in conversation
+        per_message=False # Important for callback query handling
     )
 
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("help", help_command))
 
-    # Admin Handlers
+    # Admin Handlers (outside conversation)
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(CommandHandler("stats", show_stats))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("reply", reply_by_id_command))
 
-    # Reply Handlers
-    application.add_handler(MessageHandler(filters.REPLY & filters.User(user_id=ADMIN_ID), reply_to_user))
-    application.add_handler(MessageHandler(filters.REPLY & ~filters.COMMAND, handle_user_reply))
+    # Reply Handlers (outside conversation)
+    application.add_handler(MessageHandler(filters.REPLY & filters.User(user_id=ADMIN_ID), reply_to_user_handler))
+    application.add_handler(MessageHandler(filters.REPLY & ~filters.COMMAND & ~filters.User(user_id=ADMIN_ID), handle_user_reply))
 
     application.add_error_handler(error_handler)
 
