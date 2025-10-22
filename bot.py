@@ -137,7 +137,11 @@ SELECTING_ACTION, SELECTING_DEMO_SUBJECT, FORWARD_TO_ADMIN, FORWARD_SCREENSHOT =
 # --- Command & Message Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
-    users_collection.update_one({"_id": user.id}, {"$set": {"first_name": user.first_name, "last_name": user.last_name, "username": user.username}}, upsert=True)
+    users_collection.update_one(
+        {"_id": user.id}, 
+        {"$set": {"first_name": user.first_name, "last_name": user.last_name, "username": user.username}}, 
+        upsert=True
+    )
     logger.info(f"User {user.first_name} ({user.id}) started the bot.")
     
     keyboard = []
@@ -150,6 +154,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         f"👋 Welcome, {user.first_name}!\n\nPlease select a course to view details or use /help for instructions.",
+        reply_markup=reply_markup
+    )
+    return SELECTING_ACTION
+
+async def main_menu_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = []
+    for course in courses_collection.find().sort("order", 1):
+        button_text = f"{course['name']} - ₹{course['price']}"
+        if course.get('status') == 'coming_soon':
+            button_text += " (Coming Soon)"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=course['_id'])])
+        
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        "Please select a course to view details:",
+        reply_markup=reply_markup
+    )
+    return SELECTING_ACTION
+
+async def main_menu_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    keyboard = []
+    for course in courses_collection.find().sort("order", 1):
+        button_text = f"{course['name']} - ₹{course['price']}"
+        if course.get('status') == 'coming_soon':
+            button_text += " (Coming Soon)"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=course['_id'])])
+        
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "You can select another course:",
         reply_markup=reply_markup
     )
     return SELECTING_ACTION
@@ -225,8 +262,175 @@ async def send_demo_lecture(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query.data = f"action_demo_{course_key}" # Hack to reuse the demo selection handler
     return await handle_demo_selection(update, context)
 
+async def handle_talk_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(text="Please type your message to the admin and send it\.")
+    return FORWARD_TO_ADMIN
+
+async def handle_buy_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    course_key = query.data.split('_')[-1]
+    course = context.user_data.get('selected_course')
+    
+    if not course or course['_id'] != course_key:
+        course = courses_collection.find_one({"_id": course_key})
+        context.user_data['selected_course'] = course
+
+    if not course:
+        await query.edit_message_text("Error: Course not found. Please go /start")
+        return SELECTING_ACTION
+
+    keyboard = [
+        [InlineKeyboardButton(f"💳 Pay ₹{course['price']} Now", url=RAZORPAY_LINK)],
+        [InlineKeyboardButton("✅ Already Paid? Share Screenshot", callback_data=f"action_screenshot_{course_key}")],
+        [InlineKeyboardButton("⬅️ Back", callback_data=course_key)] 
+    ]
+    buy_text = BUY_COURSE_TEXT.format(course_name=escape_markdown(course['name']), price=course['price'])
+    await query.edit_message_text(text=buy_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
+    return SELECTING_ACTION
+
+async def handle_share_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(text="Please send the screenshot of your payment now\.")
+    return FORWARD_SCREENSHOT
+
+async def forward_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    course = context.user_data.get('selected_course', {'name': 'Not specified'})
+    
+    context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user.id
+
+    escaped_message = escape_markdown(update.message.text)
+    forward_text = (
+        f"📩 New message from {escape_markdown(user.full_name)} \(ID: `{user.id}`\)\n"
+        f"Regarding course: *{escape_markdown(course['name'])}*\n\n"
+        f"Message:\n{escaped_message}"
+    )
+    await context.bot.send_message(chat_id=ADMIN_ID, text=forward_text, parse_mode=ParseMode.MARKDOWN_V2)
+    await update.message.reply_text("✅ Your message has been sent to the admin\. They will reply to you here shortly\.")
+    return await main_menu_from_message(update, context)
+
+async def forward_screenshot_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    course = context.user_data.get('selected_course', {'name': 'Not specified'})
+
+    context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user.id
+
+    caption = (
+        f"📸 New payment screenshot from: {escape_markdown(user.full_name)} \(ID: `{user.id}`\)\n"
+        f"For course: *{escape_markdown(course['name'])}*\n\n"
+        f"Reply to this message to send the course link to the user\."
+    )
+    await context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, caption=caption, parse_mode=ParseMode.MARKDOWN_V2)
+    await update.message.reply_text("✅ Screenshot received\! The admin will verify it and send you the course link here soon\.")
+    return await main_menu_from_message(update, context)
+
+# --- Admin Handlers ---
+def is_admin(update: Update) -> bool:
+    return update.effective_user.id == ADMIN_ID
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update): return
+    await update.message.reply_text(ADMIN_HELP_TEXT, parse_mode=ParseMode.MARKDOWN_V2)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.MARKDOWN_V2)
+
+async def list_courses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update): return
+    courses = list(courses_collection.find().sort("order", 1))
+    if not courses:
+        await update.message.reply_text("No courses defined\. Use `/addcourse`\.", parse_mode=ParseMode.MARKDOWN_V2)
+        return
+    courses_info = "*📚 Current Courses:*\n\n"
+    for course in courses:
+        courses_info += (
+            f"*Key:* `{course['_id']}`\n"
+            f"*Name:* {escape_markdown(course['name'])}\n"
+            f"*Price:* ₹{course['price']}\n"
+            f"*Status:* {escape_markdown(course.get('status', 'N/A').replace('_', ' ').title())}\n"
+            f"*Order:* {course.get('order', 'Not Set')}\n"
+            f"\-\-\-\-\-\-\-\-\-\-\n"
+        )
+    await update.message.reply_text(courses_info, parse_mode=ParseMode.MARKDOWN_V2)
+
+async def add_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update): return
+    try:
+        args_str = " ".join(context.args)
+        key, name, price_str, status = [p.strip() for p in args_str.split(';')]
+        status = status.lower()
+        if status not in ["available", "coming_soon"]: raise ValueError("Invalid status")
+        price = int(price_str)
+        if price < 0: raise ValueError("Negative price")
+
+        if courses_collection.find_one({"_id": key}):
+             await update.message.reply_text(f"❌ Course with key `{key}` already exists\.", parse_mode=ParseMode.MARKDOWN_V2)
+             return
+
+        new_course = {
+            "_id": key, "name": name, "price": price, "status": status,
+            "order": courses_collection.count_documents({}) + 1,
+            "demo_lectures": {"channel_id": None, "subjects": {}}
+        }
+        courses_collection.insert_one(new_course)
+        await update.message.reply_text(f"✅ Course `{escape_markdown(name)}` \(key: `{key}`\) added\.", parse_mode=ParseMode.MARKDOWN_V2)
+    except Exception as e:
+        logger.error(f"Error in add_course: {e}")
+        await update.message.reply_text("Usage: `/addcourse <key>; <name>; <price>; <status>`", parse_mode=ParseMode.MARKDOWN_V2)
+
+async def edit_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update): return
+    try:
+        args_str = " ".join(context.args)
+        key, new_name, new_price_str, new_status = [p.strip() for p in args_str.split(';')]
+        new_status = new_status.lower()
+        if new_status not in ["available", "coming_soon"]: raise ValueError("Invalid status")
+        new_price = int(new_price_str)
+        if new_price < 0: raise ValueError("Negative price")
+        
+        result = courses_collection.update_one(
+            {"_id": key},
+            {"$set": {"name": new_name, "price": new_price, "status": new_status}}
+        )
+        if result.matched_count > 0:
+            await update.message.reply_text(f"✅ Course `{key}` updated\.", parse_mode=ParseMode.MARKDOWN_V2)
+        else:
+            await update.message.reply_text(f"❌ Course with key `{key}` not found\.", parse_mode=ParseMode.MARKDOWN_V2)
+    except Exception as e:
+        logger.error(f"Error in edit_course: {e}")
+        await update.message.reply_text("Usage: `/editcourse <key>; <new_name>; <new_price>; <new_status>`", parse_mode=ParseMode.MARKDOWN_V2)
+
+async def delete_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update): return
+    try:
+        key = context.args[0]
+        result = courses_collection.delete_one({"_id": key})
+        if result.deleted_count > 0:
+            await update.message.reply_text(f"✅ Course `{key}` deleted\.", parse_mode=ParseMode.MARKDOWN_V2)
+        else:
+            await update.message.reply_text(f"❌ Course with key `{key}` not found\.", parse_mode=ParseMode.MARKDOWN_V2)
+    except IndexError:
+        await update.message.reply_text("Usage: `/delcourse <key>`", parse_mode=ParseMode.MARKDOWN_V2)
+
+async def set_course_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update): return
+    try:
+        key, order_str = context.args
+        order = int(order_str)
+        result = courses_collection.update_one({"_id": key}, {"$set": {"order": order}})
+        if result.matched_count > 0:
+            await update.message.reply_text(f"✅ Order for course `{key}` set to {order}\.", parse_mode=ParseMode.MARKDOWN_V2)
+        else:
+            await update.message.reply_text(f"❌ Course with key `{key}` not found\.", parse_mode=ParseMode.MARKDOWN_V2)
+    except (IndexError, ValueError):
+        await update.message.reply_text("Usage: `/set_order <key> <order_number>`", parse_mode=ParseMode.MARKDOWN_V2)
+
 async def add_demo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID: return
+    if not is_admin(update): return
     try:
         args_str = " ".join(context.args)
         course_key, subject_key, msg_id_str, button_text = [p.strip() for p in args_str.split(';')]
@@ -237,34 +441,117 @@ async def add_demo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             {"_id": course_key},
             {"$set": {update_field: {"button_text": button_text, "message_id": msg_id}}}
         )
-        
         if result.matched_count > 0:
-            await update.message.reply_text(f"✅ Demo lecture added/updated for course `{course_key}`.")
+            await update.message.reply_text(f"✅ Demo lecture added/updated for course `{course_key}`.", parse_mode=ParseMode.MARKDOWN_V2)
         else:
-            await update.message.reply_text(f"❌ Course with key `{course_key}` not found.")
+            await update.message.reply_text(f"❌ Course with key `{course_key}` not found\.", parse_mode=ParseMode.MARKDOWN_V2)
             
     except Exception as e:
         logger.error(f"Error in adddemo: {e}")
-        await update.message.reply_text("Usage: `/adddemo <course_key>; <subject_key>; <msg_id>; <button_text>`")
+        await update.message.reply_text("Usage: `/adddemo <course_key>; <subject_key>; <msg_id>; <button_text>`", parse_mode=ParseMode.MARKDOWN_V2)
 
-# *** FIX: This function is now defined before it is called in main() ***
-async def main_menu_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
+async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update): return
     
-    keyboard = []
-    for course in courses_collection.find().sort("order", 1):
-        button_text = f"{course['name']} - ₹{course['price']}"
-        if course.get('status') == 'coming_soon':
-            button_text += " (Coming Soon)"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=course['_id'])])
+    total_users = users_collection.count_documents({})
+    stats_text = f"📊 *Bot Statistics*\n\n*Total Users:* `{total_users}`\n\n*User List:*\n"
+    
+    users = list(users_collection.find())
+    if not users:
+        stats_text += "  _No users have started the bot\._\n"
+    else:
+        for user in users:
+            username = f"\(@{escape_markdown(user.get('username', ''))}\)" if user.get('username') else ""
+            stats_text += f"  \- {escape_markdown(user.get('first_name', 'N/A'))} {username} ID: `{user['_id']}`\n"
+
+    await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN_V2)
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update): return
+    message = " ".join(context.args)
+    if not message:
+        await update.message.reply_text("Usage: `/broadcast <your message>`", parse_mode=ParseMode.MARKDOWN_V2)
+        return
+    
+    user_ids = [user["_id"] for user in users_collection.find({}, {"_id": 1})]
+    sent_count, failed_count = 0, 0
+    for user_id in user_ids:
+        try:
+            await context.bot.send_message(chat_id=int(user_id), text=message)
+            sent_count += 1
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"Failed to send broadcast to {user_id}: {e}")
+    await update.message.reply_text(f"📢 Broadcast finished\.\nSent: {sent_count}\nFailed: {failed_count}", parse_mode=ParseMode.MARKDOWN_V2)
+
+async def reply_by_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update): return
+    try:
+        user_id = int(context.args[0])
+        message = " ".join(context.args[1:])
+        if not message: raise ValueError("Empty message")
         
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        "Please select a course to view details:",
-        reply_markup=reply_markup
-    )
-    return SELECTING_ACTION
+        reply_text = f"Admin replied:\n\n{message}"
+        await context.bot.send_message(chat_id=user_id, text=reply_text)
+        await update.message.reply_text(f"✅ Message sent to user ID `{user_id}`\.", parse_mode=ParseMode.MARKDOWN_V2)
+    except (IndexError, ValueError):
+        await update.message.reply_text("Usage: `/reply <user_id> <message>`", parse_mode=ParseMode.MARKDOWN_V2)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to send\. Error: {escape_markdown(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+
+async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update) or not update.message.reply_to_message:
+        return
+
+    original_msg = update.message.reply_to_message
+    original_text = original_msg.text or original_msg.caption
+    user_id = None
+
+    if original_text:
+        match = re.search(r'\(ID: `(\d+)`\)', original_text)
+        if match:
+            user_id = int(match.group(1))
+
+    if not user_id and original_msg.from_user.is_bot:
+        last_user_id_key = f"last_chat_with_{ADMIN_ID}"
+        if last_user_id_key in context.bot_data:
+            user_id = context.bot_data[last_user_id_key]
+
+    if not user_id:
+        await update.message.reply_text(
+            "❌ Could not determine which user to reply to\. Please reply to a message from a user, or use the `/reply <id> <msg>` command\.",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+        return
+
+    context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user_id
+
+    reply_text = f"Admin replied:\n\n{update.message.text}"
+    try:
+        await context.bot.send_message(chat_id=user_id, text=reply_text)
+        await update.message.reply_text("✅ Reply sent successfully\.", parse_mode=ParseMode.MARKDOWN_V2)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to send message to user {user_id}\. Error: {escape_markdown(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+
+async def handle_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if is_admin(update) or not update.message.reply_to_message or not update.message.reply_to_message.from_user.is_bot:
+        return
+
+    if "Admin replied:" in update.message.reply_to_message.text:
+        context.bot_data[f"last_chat_with_{ADMIN_ID}"] = user.id
+
+        forward_text = f"↪️ Follow\-up from {escape_markdown(user.full_name)} \(ID: `{user.id}`\):\n\n{escape_markdown(update.message.text)}"
+        await context.bot.send_message(chat_id=ADMIN_ID, text=forward_text, parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text("✅ Your reply has been sent\.")
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("Exception while handling an update:", exc_info=context.error)
+    error_message = f"🚨 Bot Error Alert 🚨\n\nAn error occurred: {context.error}"
+    try:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=error_message)
+    except Exception as e:
+        logger.error(f"Failed to send error alert to admin: {e}")
 
 # --- Main Application Setup ---
 def main() -> None:
@@ -284,18 +571,41 @@ def main() -> None:
             SELECTING_ACTION: [
                 CallbackQueryHandler(main_menu_from_callback, pattern="^main_menu$"),
                 CallbackQueryHandler(handle_demo_selection, pattern="^action_demo_"),
-                CallbackQueryHandler(course_selection_callback, pattern="^(?!main_menu$|action_demo_).*$"),
+                CallbackQueryHandler(handle_talk_to_admin, pattern="^action_talk_admin_"),
+                CallbackQueryHandler(handle_buy_course, pattern="^action_buy_"),
+                CallbackQueryHandler(handle_share_screenshot, pattern="^action_screenshot_"),
+                CallbackQueryHandler(course_selection_callback, pattern="^(?!main_menu$|action_demo_|action_talk_admin_|action_buy_|action_screenshot_).*$"),
             ],
             SELECTING_DEMO_SUBJECT: [
                 CallbackQueryHandler(send_demo_lecture, pattern="^demo_"),
                 CallbackQueryHandler(course_selection_callback, pattern="^(?!demo_).*$"),
             ],
+            FORWARD_TO_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, forward_to_admin)],
+            FORWARD_SCREENSHOT: [MessageHandler(filters.PHOTO, forward_screenshot_to_admin)],
         },
         fallbacks=[CommandHandler("start", start)],
     )
 
     application.add_handler(conv_handler)
+    application.add_handler(CommandHandler("help", help_command))
+    
+    # Admin Handlers
+    application.add_handler(CommandHandler("admin", admin_panel))
+    application.add_handler(CommandHandler("listcourses", list_courses))
+    application.add_handler(CommandHandler("addcourse", add_course))
+    application.add_handler(CommandHandler("editcourse", edit_course))
+    application.add_handler(CommandHandler("delcourse", delete_course))
+    application.add_handler(CommandHandler("set_order", set_course_order))
     application.add_handler(CommandHandler("adddemo", add_demo_command))
+    application.add_handler(CommandHandler("stats", show_stats))
+    application.add_handler(CommandHandler("broadcast", broadcast))
+    application.add_handler(CommandHandler("reply", reply_by_id_command))
+
+    # Reply Handlers
+    application.add_handler(MessageHandler(filters.REPLY & filters.User(user_id=ADMIN_ID), reply_to_user))
+    application.add_handler(MessageHandler(filters.REPLY & ~filters.COMMAND, handle_user_reply))
+    
+    application.add_error_handler(error_handler)
 
     logger.info("Starting Telegram bot polling...")
     application.run_polling()
