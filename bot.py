@@ -45,13 +45,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Database Connection ---
+# --- Load Local Course Data (from courses.json) ---
+COURSES_DATA = {}
+try:
+    with open('courses.json', 'r', encoding='utf-8') as f:
+        COURSES_DATA = json.load(f)
+    logger.info(f"Successfully loaded {len(COURSES_DATA)} courses from courses.json.")
+except FileNotFoundError:
+    logger.error("FATAL: courses.json file not found. Bot cannot start without it.")
+    exit()
+except json.JSONDecodeError:
+    logger.error("FATAL: courses.json contains invalid JSON. Please fix the file.")
+    exit()
+
+# --- Database Connection (for Users & Stats) ---
 try:
     client = pymongo.MongoClient(MONGO_DB_URL)
     db = client.get_default_database()
-    courses_collection = db["courses"]
     users_collection = db["users"]
-    logger.info("Successfully connected to MongoDB.")
+    logger.info("Successfully connected to MongoDB for user data.")
 except Exception as e:
     logger.error(f"FATAL: Could not connect to MongoDB: {e}")
     exit()
@@ -115,21 +127,11 @@ ADMIN_HELP_TEXT = """
 👑 *Admin Panel Commands*
 
 `/admin` \- Show this panel\.
-`/listcourses` \- List all courses\.
-`/addcourse <key>; <name>; <price>; <status>`
-  _Ex: /addcourse new\_course; New Course; 199; available_
-`/editcourse <key>; <name>; <price>; <status>`
-  _Ex: /editcourse new\_course; "Adv Course"; 249; coming\_soon_
-`/delcourse <key>` \- Remove a course\.
-`/set_order <key> <order_num>` \- Change course display order\.
-  _Ex: /set\_order new\_course 1_
-`/adddemo <key>; <subject_key>; <msg_id>; <button_text>`
-  _Ex: /adddemo new\_course; thermo; 123; Thermodynamics 🔥_
 `/stats` \- View bot usage statistics and user list\.
 `/broadcast <message>` \- Send a message to all users\.
 `/reply <user_id> <message>` \- Send a direct message to a user\.
 
-_Statuses: `available` or `coming_soon`_
+*To add, edit, or remove courses, please edit the `courses.json` file in the GitHub repository and commit your changes.*
 """
 # --- Conversation States ---
 SELECTING_ACTION, SELECTING_DEMO_SUBJECT, FORWARD_TO_ADMIN, FORWARD_SCREENSHOT = range(4)
@@ -145,11 +147,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     logger.info(f"User {user.first_name} ({user.id}) started the bot.")
     
     keyboard = []
-    for course in courses_collection.find().sort("order", 1):
+    # Read from the local COURSES_DATA variable, sorted by 'order'
+    sorted_courses = sorted(COURSES_DATA.values(), key=lambda c: c.get('order', 999))
+    for course in sorted_courses:
+        course_key = next(key for key, value in COURSES_DATA.items() if value == course) # Find key from value
         button_text = f"{course['name']} - ₹{course['price']}"
         if course.get('status') == 'coming_soon':
             button_text += " (Coming Soon)"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=course['_id'])])
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=course_key)])
         
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -163,11 +168,13 @@ async def main_menu_from_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     
     keyboard = []
-    for course in courses_collection.find().sort("order", 1):
+    sorted_courses = sorted(COURSES_DATA.values(), key=lambda c: c.get('order', 999))
+    for course in sorted_courses:
+        course_key = next(key for key, value in COURSES_DATA.items() if value == course)
         button_text = f"{course['name']} - ₹{course['price']}"
         if course.get('status') == 'coming_soon':
             button_text += " (Coming Soon)"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=course['_id'])])
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=course_key)])
         
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(
@@ -178,11 +185,13 @@ async def main_menu_from_callback(update: Update, context: ContextTypes.DEFAULT_
 
 async def main_menu_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = []
-    for course in courses_collection.find().sort("order", 1):
+    sorted_courses = sorted(COURSES_DATA.values(), key=lambda c: c.get('order', 999))
+    for course in sorted_courses:
+        course_key = next(key for key, value in COURSES_DATA.items() if value == course)
         button_text = f"{course['name']} - ₹{course['price']}"
         if course.get('status') == 'coming_soon':
             button_text += " (Coming Soon)"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=course['_id'])])
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=course_key)])
         
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -196,12 +205,13 @@ async def course_selection_callback(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
     course_key = query.data
     
-    course = courses_collection.find_one({"_id": course_key})
+    course = COURSES_DATA.get(course_key) # Read from local variable
 
     if course:
         context.user_data['selected_course'] = course
 
         buttons = []
+        # Check if demo_lectures and subjects exist and are not empty
         if course.get("demo_lectures", {}).get("subjects"):
              buttons.append([InlineKeyboardButton("🎬 Watch Demo", callback_data=f"action_demo_{course_key}")])
         
@@ -222,7 +232,7 @@ async def handle_demo_selection(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     course_key = query.data.split('_')[-1]
     
-    course = courses_collection.find_one({"_id": course_key})
+    course = COURSES_DATA.get(course_key) # Read from local variable
     if course and course.get("demo_lectures", {}).get("subjects"):
         subjects = course["demo_lectures"]["subjects"]
         keyboard = []
@@ -234,7 +244,7 @@ async def handle_demo_selection(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("Please select a subject to watch the demo lecture:", reply_markup=reply_markup)
         return SELECTING_DEMO_SUBJECT
     
-    await query.edit_message_text("No demo lectures available for this course.")
+    await query.edit_message_text("No demo lectures available for this course.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=course_key)]]))
     return SELECTING_ACTION
 
 async def send_demo_lecture(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -243,7 +253,7 @@ async def send_demo_lecture(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     _, course_key, subject_key = query.data.split('_')
     
-    course = courses_collection.find_one({"_id": course_key})
+    course = COURSES_DATA.get(course_key) # Read from local variable
     if course:
         demo_info = course["demo_lectures"]
         subject_info = demo_info["subjects"].get(subject_key)
@@ -274,8 +284,8 @@ async def handle_buy_course(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     course_key = query.data.split('_')[-1]
     course = context.user_data.get('selected_course')
     
-    if not course or course['_id'] != course_key:
-        course = courses_collection.find_one({"_id": course_key})
+    if not course or course['name'] != COURSES_DATA[course_key]['name']: # Check if course in context matches
+        course = COURSES_DATA.get(course_key)
         context.user_data['selected_course'] = course
 
     if not course:
@@ -338,117 +348,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.MARKDOWN_V2)
-
-async def list_courses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update): return
-    courses = list(courses_collection.find().sort("order", 1))
-    if not courses:
-        await update.message.reply_text("No courses defined\. Use `/addcourse`\.", parse_mode=ParseMode.MARKDOWN_V2)
-        return
-    courses_info = "*📚 Current Courses:*\n\n"
-    for course in courses:
-        courses_info += (
-            f"*Key:* `{course['_id']}`\n"
-            f"*Name:* {escape_markdown(course['name'])}\n"
-            f"*Price:* ₹{course['price']}\n"
-            f"*Status:* {escape_markdown(course.get('status', 'N/A').replace('_', ' ').title())}\n"
-            f"*Order:* {course.get('order', 'Not Set')}\n"
-            f"\-\-\-\-\-\-\-\-\-\-\n"
-        )
-    await update.message.reply_text(courses_info, parse_mode=ParseMode.MARKDOWN_V2)
-
-async def add_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update): return
-    try:
-        args_str = " ".join(context.args)
-        key, name, price_str, status = [p.strip() for p in args_str.split(';')]
-        status = status.lower()
-        if status not in ["available", "coming_soon"]: raise ValueError("Invalid status")
-        price = int(price_str)
-        if price < 0: raise ValueError("Negative price")
-
-        if courses_collection.find_one({"_id": key}):
-             await update.message.reply_text(f"❌ Course with key `{key}` already exists\.", parse_mode=ParseMode.MARKDOWN_V2)
-             return
-
-        new_course = {
-            "_id": key, "name": name, "price": price, "status": status,
-            "order": courses_collection.count_documents({}) + 1,
-            "demo_lectures": {"channel_id": None, "subjects": {}}
-        }
-        courses_collection.insert_one(new_course)
-        await update.message.reply_text(f"✅ Course `{escape_markdown(name)}` \(key: `{key}`\) added\.", parse_mode=ParseMode.MARKDOWN_V2)
-    except Exception as e:
-        logger.error(f"Error in add_course: {e}")
-        await update.message.reply_text("Usage: `/addcourse <key>; <name>; <price>; <status>`", parse_mode=ParseMode.MARKDOWN_V2)
-
-async def edit_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update): return
-    try:
-        args_str = " ".join(context.args)
-        key, new_name, new_price_str, new_status = [p.strip() for p in args_str.split(';')]
-        new_status = new_status.lower()
-        if new_status not in ["available", "coming_soon"]: raise ValueError("Invalid status")
-        new_price = int(new_price_str)
-        if new_price < 0: raise ValueError("Negative price")
-        
-        result = courses_collection.update_one(
-            {"_id": key},
-            {"$set": {"name": new_name, "price": new_price, "status": new_status}}
-        )
-        if result.matched_count > 0:
-            await update.message.reply_text(f"✅ Course `{key}` updated\.", parse_mode=ParseMode.MARKDOWN_V2)
-        else:
-            await update.message.reply_text(f"❌ Course with key `{key}` not found\.", parse_mode=ParseMode.MARKDOWN_V2)
-    except Exception as e:
-        logger.error(f"Error in edit_course: {e}")
-        await update.message.reply_text("Usage: `/editcourse <key>; <new_name>; <new_price>; <new_status>`", parse_mode=ParseMode.MARKDOWN_V2)
-
-async def delete_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update): return
-    try:
-        key = context.args[0]
-        result = courses_collection.delete_one({"_id": key})
-        if result.deleted_count > 0:
-            await update.message.reply_text(f"✅ Course `{key}` deleted\.", parse_mode=ParseMode.MARKDOWN_V2)
-        else:
-            await update.message.reply_text(f"❌ Course with key `{key}` not found\.", parse_mode=ParseMode.MARKDOWN_V2)
-    except IndexError:
-        await update.message.reply_text("Usage: `/delcourse <key>`", parse_mode=ParseMode.MARKDOWN_V2)
-
-async def set_course_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update): return
-    try:
-        key, order_str = context.args
-        order = int(order_str)
-        result = courses_collection.update_one({"_id": key}, {"$set": {"order": order}})
-        if result.matched_count > 0:
-            await update.message.reply_text(f"✅ Order for course `{key}` set to {order}\.", parse_mode=ParseMode.MARKDOWN_V2)
-        else:
-            await update.message.reply_text(f"❌ Course with key `{key}` not found\.", parse_mode=ParseMode.MARKDOWN_V2)
-    except (IndexError, ValueError):
-        await update.message.reply_text("Usage: `/set_order <key> <order_number>`", parse_mode=ParseMode.MARKDOWN_V2)
-
-async def add_demo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update): return
-    try:
-        args_str = " ".join(context.args)
-        course_key, subject_key, msg_id_str, button_text = [p.strip() for p in args_str.split(';')]
-        msg_id = int(msg_id_str)
-        
-        update_field = f"demo_lectures.subjects.{subject_key}"
-        result = courses_collection.update_one(
-            {"_id": course_key},
-            {"$set": {update_field: {"button_text": button_text, "message_id": msg_id}}}
-        )
-        if result.matched_count > 0:
-            await update.message.reply_text(f"✅ Demo lecture added/updated for course `{course_key}`.", parse_mode=ParseMode.MARKDOWN_V2)
-        else:
-            await update.message.reply_text(f"❌ Course with key `{course_key}` not found\.", parse_mode=ParseMode.MARKDOWN_V2)
-            
-    except Exception as e:
-        logger.error(f"Error in adddemo: {e}")
-        await update.message.reply_text("Usage: `/adddemo <course_key>; <subject_key>; <msg_id>; <button_text>`", parse_mode=ParseMode.MARKDOWN_V2)
 
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update): return
@@ -531,7 +430,7 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await context.bot.send_message(chat_id=user_id, text=reply_text)
         await update.message.reply_text("✅ Reply sent successfully\.", parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
-        await update.message.reply_text(f"❌ Failed to send message to user {user_id}\. Error: {escape_markdown(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(f"❌ Failed to send message to user {user_id}\. Error: {escape_markdown(str(e))}", parse_mode=ParseMode.MARKDOWN_VV2)
 
 async def handle_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -591,12 +490,6 @@ def main() -> None:
     
     # Admin Handlers
     application.add_handler(CommandHandler("admin", admin_panel))
-    application.add_handler(CommandHandler("listcourses", list_courses))
-    application.add_handler(CommandHandler("addcourse", add_course))
-    application.add_handler(CommandHandler("editcourse", edit_course))
-    application.add_handler(CommandHandler("delcourse", delete_course))
-    application.add_handler(CommandHandler("set_order", set_course_order))
-    application.add_handler(CommandHandler("adddemo", add_demo_command))
     application.add_handler(CommandHandler("stats", show_stats))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("reply", reply_by_id_command))
